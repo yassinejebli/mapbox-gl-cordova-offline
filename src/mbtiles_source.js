@@ -1,6 +1,7 @@
 import VectorTileSource from 'mapbox-gl/src/source/vector_tile_source'
 import pako from 'pako/lib/inflate'
 import base64js from 'base64-js'
+const SQL = require('sql.js');
 
 class MBTilesSource extends VectorTileSource {
 
@@ -47,8 +48,15 @@ class MBTilesSource extends VectorTileSource {
                     "Please install the plugin and make sure this code is run after onDeviceReady event"));
             }
         } else {
-            return Promise.reject(new Error("cordova-sqlite-ext plugin not available. " +
-                "Please install the plugin and make sure this code is run after onDeviceReady event"));
+            var xhr = new XMLHttpRequest();
+            xhr.open('GET', dbLocation, true);
+            xhr.responseType = 'arraybuffer';return new Promise(function (resolve, reject) {
+                xhr.onload = function (e) {
+                    var uInt8Array = new Uint8Array(this.response);
+                    resolve(new SQL.Database(uInt8Array));
+                };
+                xhr.send();
+            });
         }
     }
 
@@ -67,25 +75,40 @@ class MBTilesSource extends VectorTileSource {
     }
 
     readTile(z, x, y, callback) {
-        const query = 'SELECT BASE64(tile_data) AS base64_tile_data FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?';
         const params = [z, x, y];
-        this.db.then(function(db) {
-            db.transaction(function (txn) {
-                txn.executeSql(query, params, function (tx, res) {
-                    if (res.rows.length) {
-                        const base64Data = res.rows.item(0).base64_tile_data;
-                        const rawData = pako.inflate(base64js.toByteArray(base64Data));
-                        callback(undefined, base64js.fromByteArray(rawData)); // Tile contents read, callback success.
-                    } else {
-                        callback(new Error('tile ' + params.join(',') + ' not found'));
-                    }
+        if ('sqlitePlugin' in self && 'device' in self) { // if the app is running on mobile
+            const query = 'SELECT BASE64(tile_data) AS base64_tile_data FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?';
+            this.db.then(function(db) {
+                db.transaction(function (txn) {
+                    txn.executeSql(query, params, function (tx, res) {
+                        if (res.rows.length) {
+                            const base64Data = res.rows.item(0).base64_tile_data;
+                            const rawData = pako.inflate(base64js.toByteArray(base64Data));
+                            callback(undefined, base64js.fromByteArray(rawData));
+                        } else {
+                            callback(new Error('tile ' + params.join(',') + ' not found'));
+                        }
+                    });
+                }, function (error) {
+                    callback(error);
                 });
-            }, function (error) {
-                callback(error); // Error executing SQL
+            }).catch(function(err) {
+                callback(err);
             });
-        }).catch(function(err) {
-            callback(err);
-        });
+        }else{ // if the app is running on browser
+            this.db.then(function(db){
+                const results = db.exec('SELECT tile_data FROM tiles where zoom_level=' + z + ' AND tile_column=' + x + ' AND tile_row=' + y);
+                if(results.length){
+                    const rawData = pako.inflate(results[0].values[0][0]);
+                    callback(undefined, base64js.fromByteArray(rawData));
+                }else{
+                    callback(new Error('tile ' + params.join(',') + ' not found'));
+                }
+            }).catch(function(error){
+                callback(error);
+            });
+        }
+
     }
 
     loadTile(tile, callback) {
